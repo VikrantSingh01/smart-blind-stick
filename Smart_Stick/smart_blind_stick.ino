@@ -95,6 +95,7 @@ unsigned long lastSample = 0;  // the moment we last measured distance
 unsigned long lastBeep   = 0;  // the moment we last flipped the beep on/off
 unsigned long lastVoice  = 0;  // the moment the voice last spoke
 bool buzzOn = false;           // is the beep currently sounding?
+bool dangerOn = false;         // are we already in the solid "danger" alarm? (stops us restarting it every loop)
 int  smoothDist = RANGE_MAX;   // our steady, best guess of the distance right now
 int  waterDry   = 600;         // what "dry" reads like (the stick LEARNS this at startup)
 
@@ -133,9 +134,16 @@ int pingOnce() {
    "median filter", and it makes the stick much steadier and more trustworthy.
    THE TRICK : add all three, then subtract the biggest and the smallest. What
    is left MUST be the middle one.
+   WHY THE SMALL WAITS : the HC-SR04 datasheet asks us to leave a short gap
+   between pings so the LAST ping's sound has faded away. Without the gap, a
+   leftover echo can sneak into the next ping and give a wrong "ghost" reading.
+   A few milliseconds is plenty, and three pings + waits still fit inside one
+   60 ms measurement slot.
    ========================================================================== */
 int median3() {
-  int a = pingOnce(), b = pingOnce(), c = pingOnce();
+  int a = pingOnce(); delay(5);   // let the first ping's echo die away...
+  int b = pingOnce(); delay(5);   // ...and the second's too, before the third
+  int c = pingOnce();
   return a + b + c - max(a, max(b, c)) - min(a, min(b, c)); // (sum) - (biggest) - (smallest) = middle
 }
 
@@ -267,7 +275,10 @@ void loop() {
   // ---- (C) OBSTACLE ALERT: choose what to do based on the distance ----
   if (smoothDist <= RANGE_DANGER) {
     // VERY CLOSE: solid tone + steady buzz + LED on, and SPEAK the warning.
-    setBuzzer(true, FREQ_NEAR); setOutputs(true);
+    // Start the alarm only on the FIRST loop we enter danger. Re-calling tone()
+    // every loop (thousands of times a second) makes the buzzer click/stutter
+    // instead of holding one clean note, so we "latch" it on with dangerOn.
+    if (!dangerOn) { setBuzzer(true, FREQ_NEAR); setOutputs(true); dangerOn = true; }
 #if USE_VOICE
     if (now - lastVoice >= VOICE_COOLDOWN) {   // only speak if 4 s have passed, so it never stutters
       lastVoice = now;
@@ -279,6 +290,7 @@ void loop() {
     // IN WARNING RANGE: beep on/off. The closer the object, the SHORTER the gap
     // (faster beeps) and the HIGHER the pitch. map() does the maths: it stretches
     // the distance (20..150 cm) onto the beep gap and onto the pitch.
+    dangerOn = false;                            // left the danger zone: allow the alarm to re-arm later
     int gap  = map(smoothDist, RANGE_DANGER, RANGE_MAX, GAP_NEAR, GAP_FAR);
     int freq = map(smoothDist, RANGE_DANGER, RANGE_MAX, FREQ_NEAR, FREQ_FAR);
     if (now - lastBeep >= (unsigned long)gap) {  // is it time to flip the beep?
@@ -289,7 +301,7 @@ void loop() {
   }
   else {
     // ALL CLEAR: nothing is close, so keep everything silent and off.
-    setBuzzer(false, 0); setOutputs(false); buzzOn = false;
+    setBuzzer(false, 0); setOutputs(false); buzzOn = false; dangerOn = false;
   }
 }
 
